@@ -1,0 +1,19 @@
+# 25 October 2026 17:55: stream the first N utterances of FLEURS test (en, fr, ja) without downloading the full archive.
+# FR : lit en flux les N premiers enregistrements FLEURS test (en, fr, ja) sans télécharger l'archive entière.
+import tarfile,urllib.request,csv,io,os,sys,json,subprocess
+N=int(sys.argv[1]) if len(sys.argv)>1 else 25
+OUT=os.path.expanduser('~/.claude/tmp/tmp-claude-stt-probe-25-october-2026/bench')
+BASE='https://huggingface.co/datasets/google/fleurs/resolve/main/data'
+for lang in ['en_us','fr_fr','ja_jp']:
+    tsv=urllib.request.urlopen(f'{BASE}/{lang}/test.tsv').read().decode()
+    ref={r[1]:r[2] for r in csv.reader(io.StringIO(tsv),delimiter='\t') if len(r)>3}  # file -> raw transcription
+    os.makedirs(f'{OUT}/{lang}',exist_ok=True); items=[]
+    with tarfile.open(fileobj=urllib.request.urlopen(f'{BASE}/{lang}/audio/test.tar.gz'),mode='r|gz') as t:
+        for m in t:
+            name=os.path.basename(m.name)
+            if not name.endswith('.wav') or name not in ref: continue
+            wav=f'{OUT}/{lang}/{name}'; open(wav,'wb').write(t.extractfile(m).read())
+            subprocess.run(['ffmpeg','-loglevel','error','-y','-i',wav,'-ar','16000','-ac','1','-f','s16le',wav[:-4]+'.pcm'],check=True)
+            items.append({'id':name[:-4],'ref':ref[name]})
+            if len(items)>=N: break
+    json.dump(items,open(f'{OUT}/{lang}/refs.json','w'),ensure_ascii=False,indent=1); print(lang,len(items))

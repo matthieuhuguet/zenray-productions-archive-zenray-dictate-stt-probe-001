@@ -1,0 +1,24 @@
+# 25 October 2026 17:40: decode zstd-encoded claude.ai bundles from the Claude desktop cache and grep the voice transport.
+# FR : décode les bundles claude.ai (zstd) du cache de Claude Desktop et cherche le transport vocal.
+import os,glob,re,sys,zstandard
+from concurrent.futures import ProcessPoolExecutor
+C=os.path.expanduser('~/Library/Application Support/Claude/Cache/Cache_Data')
+PAT=re.compile(sys.argv[1].encode()) if len(sys.argv)>1 else None
+MAGIC=b'\x28\xb5\x2f\xfd'
+def scan(f):
+    b=open(f,'rb').read()
+    if b'assets-proxy.anthropic.com/claude-ai' not in b[:400]: return []
+    i=b.find(MAGIC)
+    if i<0: return []
+    try: t=zstandard.ZstdDecompressor().decompressobj().decompress(b[i:])
+    except Exception: return []
+    u=re.search(rb'https://[\x21-\x7e]+',b[:400]).group(0)[-45:].decode()
+    return [(u,m.group(0).decode('utf8','replace'),t[max(0,m.start()-300):m.end()+300].decode('utf8','replace')) for m in PAT.finditer(t)]
+if __name__=='__main__':
+    seen=set()
+    with ProcessPoolExecutor(16) as ex:
+        for r in ex.map(scan,glob.glob(C+'/*_0'),chunksize=300):
+            for u,k,ctx in r:
+                key=(k,ctx[280:330])
+                if key in seen or len(seen)>30: continue
+                seen.add(key); print('=====',k,'<-',u); print(ctx.replace('\n',' ')); print()

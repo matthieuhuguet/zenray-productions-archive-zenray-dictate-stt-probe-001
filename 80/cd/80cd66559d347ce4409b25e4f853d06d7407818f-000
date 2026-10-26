@@ -1,0 +1,48 @@
+// 25 October 2026 17:12: probe Claude's speech_to_text/voice_stream WebSocket with a PCM file and log every header and frame.
+// FR : sonde le WebSocket voice_stream de Claude avec un fichier PCM et journalise chaque en-tête et chaque trame.
+// Usage: node ProbeVoiceStream.mjs <file.pcm> [query string] [--noauth]
+import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import WebSocket from 'ws';
+
+const PARAMS = {
+  base: process.env.VOICE_STREAM_BASE_URL || 'wss://api.anthropic.com',
+  path: '/api/ws/speech_to_text/voice_stream',
+  chunkBytes: 3200,          // 100 ms of 16 kHz mono s16le
+  chunkIntervalMs: 100,
+  closeAfterMs: 4000,
+};
+const [file, query = 'encoding=linear16&sample_rate=16000&channels=1', flag] = process.argv.slice(2);
+const pcm = readFileSync(file);
+const headers = { 'x-app': 'cli', 'User-Agent': 'claude-cli/2.1.308 (external, cli)' };
+if (flag !== '--noauth') {
+  const cred = JSON.parse(execSync('security find-generic-password -s "Claude Code-credentials" -w').toString());
+  headers.Authorization = `Bearer ${cred.claudeAiOauth.accessToken}`;
+}
+const url = `${PARAMS.base}${PARAMS.path}?${query}`;
+const t0 = Date.now();
+const log = (...a) => console.log(`[${String(Date.now() - t0).padStart(5)}ms]`, ...a);
+log('URL', url);
+const ws = new WebSocket(url, { headers });
+ws.on('upgrade', (res) => log('UPGRADE', res.statusCode, JSON.stringify(res.headers)));
+ws.on('unexpected-response', (req, res) => {
+  let body = ''; res.on('data', (c) => (body += c));
+  res.on('end', () => { log('REJECTED', res.statusCode, JSON.stringify(res.headers), body.slice(0, 800)); process.exit(0); });
+});
+ws.on('open', () => {
+  log('OPEN');
+  ws.send('{"type":"KeepAlive"}');
+  let i = 0;
+  const timer = setInterval(() => {
+    if (i >= pcm.length) {
+      clearInterval(timer);
+      setTimeout(() => { log('SEND CloseStream'); ws.send('{"type":"CloseStream"}'); }, 1500);
+      return;
+    }
+    ws.send(pcm.subarray(i, i + PARAMS.chunkBytes)); i += PARAMS.chunkBytes;
+  }, PARAMS.chunkIntervalMs);
+});
+ws.on('message', (m, bin) => log('MSG', bin ? `<binary ${m.length}>` : m.toString()));
+ws.on('close', (c, r) => { log('CLOSE', c, r.toString()); process.exit(0); });
+ws.on('error', (e) => log('ERROR', e.message));
+setTimeout(() => { log('TIMEOUT'); process.exit(0); }, Number(process.env.PROBE_MAX_MS || 30000));  // 26 October 2026: PROBE_MAX_MS lifts the cap for long sessions.

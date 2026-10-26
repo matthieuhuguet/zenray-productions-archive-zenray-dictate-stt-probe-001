@@ -1,0 +1,54 @@
+// 25 October 2026 18:00: transcribe a FLEURS folder through Claude's voice_stream with a chosen provider, sequentially.
+// FR : transcrit un dossier FLEURS via le voice_stream de Claude avec le fournisseur choisi, un fichier à la fois.
+// Usage: node BenchVoiceStream.mjs <bench/lang_dir> <provider: harmonic|nova3> <language code>
+import { execSync } from 'node:child_process';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import WebSocket from 'ws';
+
+const PARAMS = {
+  url: 'wss://api.anthropic.com/api/ws/speech_to_text/voice_stream',
+  chunkBytes: 3200,       // 100 ms of 16 kHz s16le
+  chunkIntervalMs: 25,    // 4x faster than real time
+  tailMs: 1200,           // silence wait before CloseStream
+  pauseBetweenMs: 1500,   // stay under the concurrent-session limit
+};
+const [dir, provider, language] = process.argv.slice(2);
+const token = JSON.parse(execSync('security find-generic-password -s "Claude Code-credentials" -w').toString()).claudeAiOauth.accessToken;
+const outFile = `${dir}/hyp_${provider}.json`;
+const out = existsSync(outFile) ? JSON.parse(readFileSync(outFile)) : {};
+
+function transcribe(pcm) {
+  const q = new URLSearchParams({ encoding: 'linear16', sample_rate: '16000', channels: '1', endpointing_ms: '300',
+    utterance_end_ms: '1000', language, use_conversation_engine: 'true', announce_provider: 'true',
+    ...(provider === 'nova3' ? { stt_provider: 'nova3' } : {}) });
+  return new Promise((resolve) => {
+    const ws = new WebSocket(`${PARAMS.url}?${q}`, { headers: { Authorization: `Bearer ${token}`, 'x-app': 'cli' } });
+    const finals = []; let info = null; let last = ''; const t0 = Date.now(); let firstText = null;
+    ws.on('open', () => {
+      let i = 0;
+      const timer = setInterval(() => {
+        if (i >= pcm.length) { clearInterval(timer); setTimeout(() => ws.send('{"type":"CloseStream"}'), PARAMS.tailMs); return; }
+        ws.send(pcm.subarray(i, i + PARAMS.chunkBytes)); i += PARAMS.chunkBytes;
+      }, PARAMS.chunkIntervalMs);
+    });
+    ws.on('message', (m) => {
+      const j = JSON.parse(m.toString());
+      if (j.type === 'ProviderInfo') info = `${j.provider}/${j.model}`;
+      if (j.type === 'TranscriptText') { last = j.data; firstText ??= Date.now() - t0; }
+      if (j.type === 'TranscriptEndpoint' && last) { finals.push(last); last = ''; }
+      if (j.type === 'TranscriptError') info = `ERROR ${JSON.stringify(j)}`;
+    });
+    ws.on('close', () => { if (last) finals.push(last); resolve({ text: finals.join(' '), info, firstTextMs: firstText }); });
+    ws.on('error', (e) => resolve({ text: '', info: `ERROR ${e.message}` }));
+  });
+}
+
+const refs = JSON.parse(readFileSync(`${dir}/refs.json`));
+for (const r of refs) {
+  if (out[r.id]?.text) continue;
+  let res = await transcribe(readFileSync(`${dir}/${r.id}.pcm`));
+  if (res.info?.startsWith('ERROR')) { await new Promise((s) => setTimeout(s, 5000)); res = await transcribe(readFileSync(`${dir}/${r.id}.pcm`)); }
+  out[r.id] = res; writeFileSync(outFile, JSON.stringify(out, null, 1));
+  console.log(provider, language, r.id, res.info, '|', res.text.slice(0, 70));
+  await new Promise((s) => setTimeout(s, PARAMS.pauseBetweenMs));
+}

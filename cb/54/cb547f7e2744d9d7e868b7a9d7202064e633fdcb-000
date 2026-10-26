@@ -1,0 +1,11 @@
+# 25 October 2026 18:05: local baseline, mlx-whisper large-v3-turbo on the same FLEURS clips.
+# FR : référence locale, mlx-whisper large-v3-turbo sur les mêmes extraits FLEURS.
+import json,os,sys,mlx_whisper
+BENCH=os.path.expanduser('~/.claude/tmp/tmp-claude-stt-probe-25-october-2026/bench')
+MODEL='mlx-community/whisper-large-v3-turbo'
+for lang,code in [('en_us','en'),('fr_fr','fr'),('ja_jp','ja')]:
+    out={}
+    for r in json.load(open(f'{BENCH}/{lang}/refs.json')):
+        t=mlx_whisper.transcribe(f"{BENCH}/{lang}/{r['id']}.wav",path_or_hf_repo=MODEL,language=code)['text'].strip()
+        out[r['id']]={'text':t,'info':'local/whisper-large-v3-turbo'}
+    json.dump(out,open(f'{BENCH}/{lang}/hyp_whisper.json','w'),ensure_ascii=False,indent=1); print(lang,'ok')

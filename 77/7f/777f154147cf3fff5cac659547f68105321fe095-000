@@ -1,0 +1,36 @@
+# 25 October 2026 18:10: score every hyp_*.json against FLEURS references (WER for en/fr, CER for ja).
+# FR : note chaque hyp_*.json contre les références FLEURS (WER pour en/fr, CER pour ja).
+import json,os,re,glob,unicodedata
+BENCH=os.path.expanduser('~/.claude/tmp/tmp-claude-stt-probe-25-october-2026/bench')
+UNIT={'en_us':'word','fr_fr':'word','ja_jp':'char'}
+
+def norm(s,unit):
+    s=unicodedata.normalize('NFKC',s).lower()
+    s=s.replace('’',"'")
+    s=re.sub(r"[^\w\s']",' ',s)           # drop punctuation
+    s=re.sub(r"(?<!\w)'|'(?!\w)",' ',s)
+    toks=s.split()
+    return list(''.join(toks)) if unit=='char' else toks
+
+def edits(a,b):
+    d=list(range(len(b)+1))
+    for i,x in enumerate(a,1):
+        p,d[0]=d[0],i
+        for j,y in enumerate(b,1):
+            p,d[j]=d[j],min(d[j]+1,d[j-1]+1,p+(x!=y))
+    return d[-1]
+
+rows=[]
+for lang,unit in UNIT.items():
+    refs={r['id']:r['ref'] for r in json.load(open(f'{BENCH}/{lang}/refs.json'))}
+    for f in sorted(glob.glob(f'{BENCH}/{lang}/hyp_*.json')):
+        name=os.path.basename(f)[4:-5]; hyp=json.load(open(f))
+        E=N=0; n=0; infos=set()
+        for k,ref in refs.items():
+            if k not in hyp: continue
+            r=norm(ref,unit); h=norm(hyp[k]['text'],unit)
+            E+=edits(r,h); N+=len(r); n+=1; infos.add(hyp[k].get('info'))
+        rows.append((lang,name,n,100*E/max(N,1),','.join(sorted(map(str,infos)))))
+print(f"{'langue':7} {'moteur':9} {'clips':>5} {'erreur %':>8}  modèle annoncé")
+for lang,name,n,err,info in rows:
+    print(f"{lang:7} {name:9} {n:5d} {err:8.2f}  {info} ({'CER' if UNIT[lang]=='char' else 'WER'})")

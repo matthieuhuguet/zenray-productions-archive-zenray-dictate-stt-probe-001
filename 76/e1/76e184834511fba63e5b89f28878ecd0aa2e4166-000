@@ -1,0 +1,38 @@
+# 25 October 2026 17:30: scan the Claude desktop HTTP cache of claude.ai JS bundles for voice and STT code (raw, brotli, gzip, zstd).
+# FR : parcourt le cache HTTP de Claude Desktop (bundles JS de claude.ai) pour y trouver le code vocal et STT.
+import os,glob,re,sys,zlib,brotli
+from concurrent.futures import ProcessPoolExecutor
+ROOT=os.path.expanduser('~/Library/Application Support/Claude')
+PAT=re.compile(rb'TranscriptText|TranscriptEndpoint|KeepAlive|CloseStream|/ws/|linear16|keyterms')
+def bodies(b):
+    yield b
+    u=re.search(rb'https://[\x21-\x7e]+',b[:3000]); s=u.end() if u else 0
+    for k in range(s,min(s+64,len(b))):
+        d=brotli.Decompressor(); out=b''
+        try:
+            for i in range(k,len(b),65536):
+                out+=d.process(b[i:i+65536])
+                if d.is_finished(): break
+            if len(out)>100: yield out; break
+        except Exception: pass
+    try: yield zlib.decompressobj(31).decompress(b[s:])
+    except Exception: pass
+def scan(f):
+    try: b=open(f,'rb').read()
+    except Exception: return []
+    u=re.search(rb'https://[\x21-\x7e]+',b[:3000])
+    if not u or b'assets-proxy' not in u.group(0): return []
+    res=[]
+    for t in bodies(b):
+        for m in PAT.finditer(t): res.append((u.group(0)[-50:].decode(),m.group(0).decode('utf8','replace'),t[max(0,m.start()-260):m.end()+260].decode('utf8','replace')))
+        if res: break
+    return res
+if __name__=='__main__':
+    files=glob.glob(ROOT+'/**/Cache_Data/*_0',recursive=True)
+    seen=set()
+    with ProcessPoolExecutor(16) as ex:
+        for r in ex.map(scan,files,chunksize=200):
+            for u,k,ctx in r:
+                key=(k,ctx[240:300])
+                if key in seen or len(seen)>40: continue
+                seen.add(key); print('=====',k,'<-',u); print(ctx.replace('\n',' ')); print()
